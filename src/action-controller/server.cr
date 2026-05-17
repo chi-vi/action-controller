@@ -1,5 +1,3 @@
-require "./open_api"
-
 class ActionController::Server
   include Router
 

@@ -103,18 +103,6 @@ end
 # helpers for defining routes with strong parameters
 module ActionController::Route::Builder
   # :nodoc:
-  # filter name => Params used
-  OPENAPI_FILTERS = {} of Nil => Nil
-
-  # :nodoc:
-  # error klass => response object name => response code
-  OPENAPI_ERRORS = {} of Nil => Nil
-
-  # :nodoc:
-  # verb+route  => controller_name, route_name, params (path, query), request body schema, response object name => response code
-  OPENAPI_ROUTES = {} of Nil => Nil
-
-  # :nodoc:
   # Routing related
   ROUTE_FUNCTIONS = {} of Nil => Nil
 
@@ -234,9 +222,7 @@ module ActionController::Route::Builder
         {% for ann, idx in method.annotations(route_method) %}
           {% annotation_found = true %}
 
-          # OpenAPI route lookup (note full route here is not valid for exceptions and filters)
           {% full_route = (NAMESPACE[0] + ann[0].id.stringify).split("/").reject(&.empty?) %}
-          {% verb_route = lower_route_method.stringify.upcase + "/" + full_route.join("/") %}
 
           {% if route_method == AC::Route::Filter && ann[0] == :around_action %}
             {% raise "#{@type.name}##{method_name} method must yield" unless method.accepts_block? %}
@@ -252,8 +238,7 @@ module ActionController::Route::Builder
           {% body_argument = (ann[:body] || "%").id.stringify %} # % is an invalid argument name
           {% response_type = ann[:response_type] || method.return_type %}
 
-          {% open_api_route = {} of Nil => Nil %}
-          {% open_api_params = {} of Nil => Nil %}
+
 
           # support annotation based filters
           {% if route_method == AC::Route::Filter %}
@@ -261,12 +246,7 @@ module ActionController::Route::Builder
             {% filter_type = ann[0].id %}
             {% function_wrapper_name = "_#{filter_type.stringify.underscore.gsub(/\:\:/, "_").id}_#{method_name}_wrapper_".id %}
 
-            {% open_api_route[:request_body] = Nil %}
-            {% open_api_route[:controller] = @type.name.stringify %}
-            {% open_api_route[:method] = method_name.stringify %}
-            {% open_api_route[:wrapper_method] = function_wrapper_name.stringify %}
-            {% open_api_route[:params] = open_api_params %}
-            {% OPENAPI_FILTERS[@type.name.stringify + "#" + method_name.stringify] = open_api_route %}
+
 
             {{filter_type}}({{function_wrapper_name.symbolize}}, only: {{ann[:only]}}, except: {{ann[:except]}}, filter_name: {{method_name}})
 
@@ -278,11 +258,7 @@ module ActionController::Route::Builder
             {% exception_class = ann[0].resolve.stringify %}
             {% function_wrapper_name = "_#{exception_class.underscore.gsub(/\:\:/, "_").id}_#{method_name}_wrapper_".id %}
 
-            {% open_api_route[:controller] = @type.name.stringify %}
-            {% open_api_route[:exception] = exception_class %}
-            {% open_api_route[:responses] = {} of Nil => Nil %}
-            {% open_api_route[:method] = method_name.stringify %}
-            {% OPENAPI_ERRORS[@type.name.stringify + "#" + exception_class] = open_api_route %}
+
 
             rescue_from {{exception_class.id}}, {{function_wrapper_name.symbolize}}
 
@@ -302,28 +278,7 @@ module ActionController::Route::Builder
             {% optional_params = full_route.select(&.starts_with?("?:")).map { |part| part.split(":")[1] } %}
             # {% splat_params = full_route.select(&.starts_with?("*:")).map { |part| part.split(":")[1] } %}
 
-            {% open_api_route[:request_body] = Nil %}
-            {% open_api_route[:controller] = @type.name.stringify %}
-            {% open_api_route[:responses] = {} of Nil => Nil %}
-            {% open_api_route[:method] = method_name.stringify %}
-            {% open_api_route[:route] = "/" + full_route.join("/") %}
-            {% open_api_route[:verb] = lower_route_method.stringify %}
-            {% OPENAPI_ROUTES[verb_route] = open_api_route %}
 
-            # initial recording of path params
-            {% for path_param in required_params %}
-              {% open_api_params[path_param] = {} of Nil => Nil %}
-              {% open_api_params[path_param][:in] = :path %}
-              {% open_api_params[path_param][:required] = true %}
-              {% open_api_params[path_param][:schema] = Nil %}
-            {% end %}
-            {% for path_param in optional_params %}
-              {% open_api_params[path_param] = {} of Nil => Nil %}
-              {% open_api_params[path_param][:in] = :path %}
-              {% open_api_params[path_param][:required] = false %}
-              {% open_api_params[path_param][:schema] = Nil %}
-            {% end %}
-            {% open_api_route[:params] = open_api_params %}
 
             # add a redirect helper (yes, it will only match the last route applied)
             {% if lower_route_method.stringify == "get" %}
@@ -398,29 +353,11 @@ module ActionController::Route::Builder
                     {% custom_converter = converters[string_name.id.symbolize] || (ann_converter && ann_converter[:class]) %}
                     {% converter_args = config[string_name.id.symbolize] || (ann_converter && ann_converter[:config]) %}
 
-                    {% if body_argument == string_name %}
-                      {% open_api_param = {} of Nil => Nil %}
-                    {% else %}
-                      {% open_api_param = open_api_params[query_param_name] || {} of Nil => Nil %}
-
-                      # check for header params
-                      {% if (ann_converter && ann_converter[:header]) %}
-                        {% open_api_param[:in] = :header %}
-                        {% open_api_param[:header] = ann_converter[:header].id.stringify %}
-                      {% else %}
-                        {% open_api_param[:in] = open_api_param[:in] || :query %}
-                      {% end %}
-
-                      {% open_api_param[:in] = open_api_param[:in] || :query %}
-                      {% open_api_param[:docs] = (ann_converter && ann_converter[:description]) %}
-                      {% open_api_param[:example] = (ann_converter && ann_converter[:example]) %}
-                      {% open_api_params[query_param_name] = open_api_param %}
-                    {% end %}
+                    {% is_header = (ann_converter && ann_converter[:header]) %}
+                    {% header_name = is_header ? ann_converter[:header].id.stringify : nil %}
 
                     # Calculate the conversions required to meet the desired restrictions
                     {% if arg.restriction %}
-                      {% open_api_param[:schema] = arg.restriction.resolve %}
-
                       # Check if restriction is optional
                       {% nilable = arg.restriction.resolve.nilable? %}
 
@@ -454,25 +391,20 @@ module ActionController::Route::Builder
                         {% union_types = arg.restriction.resolve.union_types.reject(&.nilable?) %}
                         {% restrictions = union_types.map do |type|
                              if type.resolve < Enum
-                               ("::AC::Route::Param::ConvertEnum(" + type.stringify + ").convert(param_value)")
+                                ("::AC::Route::Param::ConvertEnum(" + type.stringify + ").convert(param_value)")
                              else
-                               ("::AC::Route::Param::Convert" + type.stringify + ".new.convert(param_value)")
+                                ("::AC::Route::Param::Convert" + type.stringify + ".new.convert(param_value)")
                              end
                            end %}
                       {% end %}
                     {% else %}
                       {% nilable = true %}
                       {% restrictions = ["::AC::Route::Param::ConvertString.new.convert(param_value)"] %}
-
-                      {% open_api_param[:schema] = "String?".id %}
                     {% end %}
-
-                    {% open_api_param[:required] = open_api_param[:required] || (!nilable && arg.default_value.stringify == "") %}
 
                     # Build the argument named tuple with the correct types
                     {{arg.name.id}}: (
                       {% if body_argument == string_name %}
-                        {% open_api_route[:request_body] = arg.restriction.resolve %}
 
                         if body_io = @__context__.request.body
                           case body_type
@@ -492,8 +424,8 @@ module ActionController::Route::Builder
                         end
 
                       # handle header params
-                      {% elsif open_api_param.has_key?(:header) %}
-                        if param_value = @__context__.request.headers.fetch({{open_api_param[:header]}}, nil)
+                      {% elsif is_header %}
+                        if param_value = @__context__.request.headers.fetch({{header_name}}, nil)
                           {{restrictions.join(" || ").id}}
                         {% if arg.default_value.stringify != "" %}
                         else
@@ -510,7 +442,7 @@ module ActionController::Route::Builder
                         end
 
                       # An optional route param, might be passed as an query param (not the case for headers)
-                      {% elsif !open_api_param.has_key?(:header) %}
+                      {% elsif !is_header %}
                         if param_value = params[{{query_param_name}}]?
                           {{restrictions.join(" || ").id}}
                         {% if arg.default_value.stringify != "" %}
@@ -523,11 +455,11 @@ module ActionController::Route::Builder
                     # Use tap to ensure a good error message if the function param isn't nilable
                     ){% if !nilable %}.tap { |result|
                       if result.nil?
-                        {% if open_api_param.has_key?(:header) %}
-                          if @__context__.request.headers.has_key?({{open_api_param[:header]}})
-                            raise ::AC::Route::Param::ValueError.new("invalid header value for '#{ {{open_api_param[:header]}} }'", {{open_api_param[:header]}}, {{arg.restriction.resolve.stringify}})
+                        {% if is_header %}
+                          if @__context__.request.headers.has_key?({{header_name}})
+                            raise ::AC::Route::Param::ValueError.new("invalid header value for '#{ {{header_name}} }'", {{header_name}}, {{arg.restriction.resolve.stringify}})
                           else
-                            raise ::AC::Route::Param::MissingError.new("missing required header '#{ {{open_api_param[:header]}} }'", {{open_api_param[:header]}}, {{arg.restriction.resolve.stringify}})
+                            raise ::AC::Route::Param::MissingError.new("missing required header '#{ {{header_name}} }'", {{header_name}}, {{arg.restriction.resolve.stringify}})
                           end
                         {% else %}
                           if params.has_key?({{query_param_name}})
@@ -551,17 +483,7 @@ module ActionController::Route::Builder
               {% end %}
             {% end %}
 
-            {% if route_method == AC::Route::WebSocket %}
-              {% open_api_route[:default_response] = {Nil, 101, false} %}
-            {% end %}
-
             {% if !{AC::Route::Filter, AC::Route::WebSocket}.includes?(route_method) %}
-              {% if response_type %}
-                {% open_api_route[:default_response] = {response_type.resolve, status_code, true} %}
-              {% else %}
-                {% open_api_route[:default_response] = {Nil, status_code, false} %}
-              {% end %}
-
               unless @__render_called__
                 responose = @__context__.response
                 {% if status_code_map.empty? %}
@@ -570,7 +492,6 @@ module ActionController::Route::Builder
                   case result
                     {% for result_klass, status_mapped in status_code_map %}
                   when {{result_klass}}
-                      {% open_api_route[:responses][result_klass] = status_mapped %}
                       response.status_code = ({{status_mapped}}).to_i
                     {% end %}
                   else
